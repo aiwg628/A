@@ -7,13 +7,11 @@ from discord.ui import Button, View, Modal, TextInput
 # ----------------- قراءة التوكنات والإعدادات من Railway -----------------
 MAIN_BOT_TOKEN = os.getenv("MAIN_BOT_TOKEN")
 
-# جلب توكنات البوتات العشرة المساعدة من المتغيرات البيئية
 HELPER_BOT_TOKENS = [
     os.getenv(f"HELPER_TOKEN_{i}") for i in range(1, 11)
     if os.getenv(f"HELPER_TOKEN_{i}")
 ]
 
-# تحديث المعرفات وفق الطلب
 JOIN_TO_CREATE_ID = int(os.getenv("JOIN_TO_CREATE_ID", "1546614862032150540"))
 WAITING_ROOM_ID = int(os.getenv("WAITING_ROOM_ID", "1543680903853641821"))
 CATEGORY_ID = int(os.getenv("CATEGORY_ID", "1546174974665039982"))
@@ -28,7 +26,7 @@ main_bot = commands.Bot(command_prefix="!", intents=intents)
 
 active_rooms = {}
 available_helpers = []
-room_counter = 0  # العداد لترقيم الرومات تلقائياً
+room_counter = 0
 
 # ----------------- نافذة تغيير اسم الروم -----------------
 class RenameModal(Modal, title="تغيير اسم الروم"):
@@ -49,8 +47,8 @@ class RenameModal(Modal, title="تغيير اسم الروم"):
             try:
                 await channel.edit(name=self.new_name.value)
                 await interaction.response.send_message(f"✅ تم تغيير اسم الروم إلى: **{self.new_name.value}**", ephemeral=True)
-            except discord.HTTPException as e:
-                await interaction.response.send_message("❌ حدث خطأ أثناء تغيير الاسم (قد يكون هناك حد لتغيير الأسماء في ديسكورد).", ephemeral=True)
+            except discord.HTTPException:
+                await interaction.response.send_message("❌ حدث خطأ أثناء تغيير الاسم.", ephemeral=True)
         else:
             await interaction.response.send_message("❌ لم يتم العثور على القناة الصوتية.", ephemeral=True)
 
@@ -69,12 +67,11 @@ class VoiceInterfaceView(View):
 
     @discord.ui.button(label="Name", emoji="✏️", style=discord.ButtonStyle.secondary, row=0)
     async def change_name(self, interaction: discord.Interaction, button: Button):
-        # فتح نافذة إدخال الاسم الجديد
         await interaction.response.send_modal(RenameModal(self.room_id))
 
     @discord.ui.button(label="Limit", emoji="👥", style=discord.ButtonStyle.secondary, row=0)
     async def change_limit(self, interaction: discord.Interaction, button: Button):
-        await interaction.response.send_message("يمكنك تحديد عدد الأعضاء المسموح بهم مباشرة من إعدادات القناة الصوتية.", ephemeral=True)
+        await interaction.response.send_message("يمكنك تحديد عدد الأعضاء المسموح بهم من إعدادات القناة الصوتية.", ephemeral=True)
 
     @discord.ui.button(label="Privacy", emoji="🛡️", style=discord.ButtonStyle.secondary, row=0)
     async def toggle_privacy(self, interaction: discord.Interaction, button: Button):
@@ -111,16 +108,16 @@ async def delete_temp_room(room_id):
 
     helper_bot = data.get("bot_client")
     if helper_bot:
-        waiting_channel = helper_bot.get_channel(WAITING_ROOM_ID)
-        for vc in helper_bot.voice_clients:
-            if vc.channel and vc.channel.id == room_id:
-                try:
+        try:
+            waiting_channel = await helper_bot.fetch_channel(WAITING_ROOM_ID)
+            for vc in helper_bot.voice_clients:
+                if vc.channel and vc.channel.id == room_id:
                     if waiting_channel:
                         await vc.move_to(waiting_channel)
                     else:
                         await vc.disconnect()
-                except Exception as e:
-                    print(f"خطأ في نقل البوت المساعد: {e}")
+        except Exception as e:
+            print(f"خطأ في نقل البوت المساعد عند الحذف: {e}")
         
         if helper_bot not in available_helpers:
             available_helpers.append(helper_bot)
@@ -136,18 +133,11 @@ async def delete_temp_room(room_id):
 async def on_voice_state_update(member, before, after):
     global room_counter
 
-    # 1. دخول عضو لروم الانضمام الفوري (1546614862032150540)
+    # 1. دخول عضو لروم الانضمام الفوري
     if after.channel and after.channel.id == JOIN_TO_CREATE_ID:
         guild = member.guild
         category = guild.get_channel(CATEGORY_ID)
         
-        if not available_helpers:
-            await member.move_to(None)
-            return
-
-        assigned_helper = available_helpers.pop(0)
-
-        # زيادة الترقيم التلقائي وإنشاء الروم برقم جديد
         room_counter += 1
         room_name = f"🔊 | روم #{room_counter}"
 
@@ -156,18 +146,27 @@ async def on_voice_state_update(member, before, after):
             member: discord.PermissionOverwrite(manage_channels=True, move_members=True)
         }
         
-        new_channel = await guild.create_voice_channel(
-            name=room_name,
-            category=category,
-            overwrites=overwrites
-        )
+        try:
+            new_channel = await guild.create_voice_channel(
+                name=room_name,
+                category=category,
+                overwrites=overwrites
+            )
+            # نقل العضو للروم الجديد فورًا
+            await member.move_to(new_channel)
+        except Exception as e:
+            print(f"❌ فشل إنشاء الروم أو نقل العضو: {e}")
+            return
 
-        # نقل العضو والبوت المساعد للروم الجديد
-        await member.move_to(new_channel)
-
-        for vc in assigned_helper.voice_clients:
-            if vc.channel and vc.channel.id == WAITING_ROOM_ID:
-                await vc.move_to(new_channel)
+        assigned_helper = None
+        if available_helpers:
+            assigned_helper = available_helpers.pop(0)
+            # نقل البوت المساعد للروم الجديد
+            for vc in assigned_helper.voice_clients:
+                try:
+                    await vc.move_to(new_channel)
+                except Exception as e:
+                    print(f"❌ تعذر نقل البوت المساعد للروم الجديد: {e}")
 
         embed = discord.Embed(
             title="TempVoice Interface",
@@ -184,7 +183,7 @@ async def on_voice_state_update(member, before, after):
             "timeout_task": None
         }
 
-    # 2. خروج جميع الأعضاء البشر وتفعيل مهلة الحذف (ساعة)
+    # 2. خروج جميع الأعضاء البشر وتفعيل مهلة الحذف
     if before.channel and before.channel.id in active_rooms:
         room_id = before.channel.id
         channel = before.channel
@@ -201,7 +200,7 @@ async def on_voice_state_update(member, before, after):
             task = asyncio.create_task(delayed_deletion())
             active_rooms[room_id]["timeout_task"] = task
 
-    # 3. إلغاء الحذف فور رجوع أي عضو قبل انتهاء الساعة
+    # 3. إلغاء الحذف عند العودة
     if after.channel and after.channel.id in active_rooms:
         room_id = after.channel.id
         room_data = active_rooms[room_id]
@@ -217,21 +216,22 @@ async def start_helper_bot(token):
 
     @helper.event
     async def on_ready():
-        channel = helper.get_channel(WAITING_ROOM_ID)
-        if channel and isinstance(channel, discord.VoiceChannel):
-            if not helper.voice_clients:
-                try:
+        await helper.wait_until_ready()
+        try:
+            channel = await helper.fetch_channel(WAITING_ROOM_ID)
+            if channel and isinstance(channel, discord.VoiceChannel):
+                if not helper.voice_clients:
                     await channel.connect(self_deaf=True)
                     if helper not in available_helpers:
                         available_helpers.append(helper)
                     print(f"✅ تم إدخال البوت المساعد [{helper.user.name}] لروم الانتظار.")
-                except Exception as e:
-                    print(f"❌ خطأ في دخول البوت المساعد: {e}")
+        except Exception as e:
+            print(f"❌ خطأ في دخول البوت المساعد [{helper.user}]: {e}")
 
     try:
         await helper.start(token)
     except Exception as e:
-        print(f"❌ فشل تشغيل أحد البوتات المساعدة: {e}")
+        print(f"❌ فشل تشغيل التوكن المساعد: {e}")
 
 async def main():
     tasks = []
