@@ -7,10 +7,12 @@ from discord.ui import Button, View, Modal, TextInput
 # ----------------- قراءة التوكنات والإعدادات من Railway -----------------
 MAIN_BOT_TOKEN = os.getenv("MAIN_BOT_TOKEN")
 
-HELPER_BOT_TOKENS = [
-    os.getenv(f"HELPER_TOKEN_{i}") for i in range(1, 11)
-    if os.getenv(f"HELPER_TOKEN_{i}")
-]
+# قراءة التوكنات بشكل منظم مع الحفاظ على الترقيم من 1 إلى 10
+HELPER_BOT_TOKENS = {}
+for i in range(1, 11):
+    token = os.getenv(f"HELPER_TOKEN_{i}")
+    if token:
+        HELPER_BOT_TOKENS[i] = token
 
 JOIN_TO_CREATE_ID = int(os.getenv("JOIN_TO_CREATE_ID", "1546614862032150540"))
 WAITING_ROOM_ID = int(os.getenv("WAITING_ROOM_ID", "1543680903853641821"))
@@ -29,7 +31,8 @@ helper_intents.guilds = True
 main_bot = commands.Bot(command_prefix="!", intents=main_intents)
 
 active_rooms = {}
-available_helpers = []
+# قاموس لتخزين البوتات المساعدة المتاحة حسب رقمها المرتب {index: helper_client}
+available_helpers = {}
 room_counter = 0
 
 # ----------------- نافذة تغيير اسم الروم -----------------
@@ -118,39 +121,36 @@ async def delete_temp_room(room_id):
         except Exception:
             pass
 
-    helper_bot = data.get("bot_client")
+    helper_info = data.get("bot_info") # ينقل (index, client)
     
-    # حذف القناة الصوتية المؤقتة أولاً
     if room_channel:
         try:
             await room_channel.delete()
         except Exception as e:
             print(f"❌ تعذر حذف القناة الصوتية: {e}")
 
-    # إعادة توجيه البوت المساعد (إلى روم محتاج أو لروم الانتظار)
-    if helper_bot:
+    if helper_info:
+        helper_idx, helper_bot = helper_info
         target_channel_id = None
         
-        # البحث عن أي روم نشط لا يملك بوت مساعد
         for target_id, r_data in active_rooms.items():
-            if r_data.get("bot_client") is None:
+            if r_data.get("bot_info") is None:
                 target_channel_id = target_id
-                r_data["bot_client"] = helper_bot
-                print(f"🔄 نقل البوت المساعد [{helper_bot.user.name}] لخدمة الروم المؤقت (ID: {target_id})")
+                r_data["bot_info"] = (helper_idx, helper_bot)
+                print(f"🔄 نقل البوت المساعد رقم [{helper_idx}] لخدمة الروم المؤقت (ID: {target_id})")
                 break
         
-        # إذا لم يوجد روم محتاج، توجيهه لروم الانتظار
         if not target_channel_id:
             target_channel_id = WAITING_ROOM_ID
-            if helper_bot not in available_helpers:
-                available_helpers.append(helper_bot)
-            print(f"🏠 إرجاع البوت المساعد [{helper_bot.user.name}] لروم الانتظار.")
+            available_helpers[helper_idx] = helper_bot
+            print(f"🏠 إرجاع البوت المساعد رقم [{helper_idx}] لروم الانتظار.")
 
         try:
             waiting_or_target = helper_bot.get_channel(target_channel_id) or await helper_bot.fetch_channel(target_channel_id)
-            for vc in helper_bot.voice_clients:
-                if waiting_or_target:
-                    await vc.move_to(waiting_or_target)
+            if waiting_or_target:
+                for vc in helper_bot.voice_clients:
+                    await vc.disconnect()
+                await waiting_or_target.connect(reconnect=True, self_deaf=True, self_mute=True)
         except Exception as e:
             print(f"❌ خطأ أثناء إعادة توجيه البوت المساعد: {e}")
 
@@ -163,7 +163,6 @@ async def on_ready():
 async def on_voice_state_update(member, before, after):
     global room_counter
 
-    # 1. عند دخول عضو لروم الانضمام الفوري
     if after.channel and after.channel.id == JOIN_TO_CREATE_ID:
         guild = member.guild
         category = guild.get_channel(CATEGORY_ID)
@@ -193,18 +192,24 @@ async def on_voice_state_update(member, before, after):
             print(f"❌ خطأ أثناء إنشاء الروم أو نقل العضو: {e}")
             return
 
-        assigned_helper = None
+        assigned_helper_info = None
+        
+        # اختيار أقل رقم بوت مساعد متوفر لضمان الترتيب التنازلي المنظم (1 ثم 2 ثم 3...)
         if available_helpers:
-            assigned_helper = available_helpers.pop(0)
-            for vc in assigned_helper.voice_clients:
-                try:
-                    # النقل المباشر وتفعيل الزيف (Deafen)
-                    await vc.move_to(new_channel)
-                    if hasattr(vc, "guild") and vc.guild.me:
-                        await vc.guild.me.edit(deafen=True)
-                    print(f"🤖 تم نقل البوت المساعد [{assigned_helper.user.name}] للروم الجديد وتفعيل الزيف.")
-                except Exception as e:
-                    print(f"❌ تعذر نقل البوت المساعد للروم الجديد: {e}")
+            first_available_idx = min(available_helpers.keys())
+            assigned_helper = available_helpers.pop(first_available_idx)
+            assigned_helper_info = (first_available_idx, assigned_helper)
+
+            try:
+                for vc in assigned_helper.voice_clients:
+                    await vc.disconnect()
+                
+                helper_target_channel = assigned_helper.get_channel(new_channel.id) or await assigned_helper.fetch_channel(new_channel.id)
+                if helper_target_channel:
+                    await helper_target_channel.connect(reconnect=True, self_deaf=True, self_mute=True)
+                    print(f"🤖 دخل البوت المساعد رقم [{first_available_idx}] لروم الشخص بالزيف الكلي.")
+            except Exception as e:
+                print(f"❌ تعذر نقل البوت المساعد للروم الجديد: {e}")
 
         try:
             embed = discord.Embed(
@@ -219,12 +224,11 @@ async def on_voice_state_update(member, before, after):
 
         active_rooms[new_channel.id] = {
             "owner_id": member.id,
-            "bot_client": assigned_helper,
+            "bot_info": assigned_helper_info,
             "interface_msg": msg,
             "timeout_task": None
         }
 
-    # 2. خروج الأعضاء وتفعيل المؤقت
     if before.channel and before.channel.id in active_rooms:
         room_id = before.channel.id
         channel = before.channel
@@ -241,7 +245,6 @@ async def on_voice_state_update(member, before, after):
             task = asyncio.create_task(delayed_deletion())
             active_rooms[room_id]["timeout_task"] = task
 
-    # 3. إلغاء الحذف عند عودة أي عضو
     if after.channel and after.channel.id in active_rooms:
         room_id = after.channel.id
         room_data = active_rooms[room_id]
@@ -251,32 +254,30 @@ async def on_voice_state_update(member, before, after):
             room_data["timeout_task"].cancel()
             room_data["timeout_task"] = None
 
-# ----------------- التشغيل للبوتات المساعدة -----------------
-async def connect_helper_to_waiting_room(helper):
-    await asyncio.sleep(5)
+# ----------------- التشغيل للبوتات المساعدة مع الربط برقم التوكن -----------------
+async def connect_helper_to_waiting_room(helper, index):
+    await asyncio.sleep(3)
     try:
         channel = helper.get_channel(WAITING_ROOM_ID) or await helper.fetch_channel(WAITING_ROOM_ID)
         if channel and isinstance(channel, discord.VoiceChannel):
             if not helper.voice_clients:
-                # تفعيل self_deaf عند الاتصال الأولي
-                await channel.connect(reconnect=True, self_deaf=True)
-                if helper not in available_helpers:
-                    available_helpers.append(helper)
-                print(f"🤖 البوت المساعد [{helper.user.name}] دخل روم الانتظار بنجاح (مع الزيف).")
+                await channel.connect(reconnect=True, self_deaf=True, self_mute=True)
+                available_helpers[index] = helper
+                print(f"🤖 البوت المساعد رقم [{index}] دخل روم الانتظار بنجاح (مع الزيف والترتيب).")
     except Exception as e:
-        print(f"⚠️ فشل البوت المساعد [{helper.user}] في دخول روم الانتظار: {e}")
+        print(f"⚠️ فشل البوت المساعد رقم [{index}] في دخول روم الانتظار: {e}")
 
-async def start_helper_bot(token):
+async def start_helper_bot(index, token):
     helper = discord.Client(intents=helper_intents)
 
     @helper.event
     async def on_ready():
-        asyncio.create_task(connect_helper_to_waiting_room(helper))
+        asyncio.create_task(connect_helper_to_waiting_room(helper, index))
 
     try:
         await helper.start(token)
     except Exception as e:
-        print(f"❌ فشل تشغيل أحد البوتات المساعدة: {e}")
+        print(f"❌ فشل تشغيل البوت المساعد رقم [{index}]: {e}")
 
 async def main():
     if MAIN_BOT_TOKEN:
@@ -285,9 +286,9 @@ async def main():
         print("❌ لم يتم العثور على MAIN_BOT_TOKEN!")
         return
 
-    for token in HELPER_BOT_TOKENS:
-        if token:
-            asyncio.create_task(start_helper_bot(token))
+    # تشغيل البوتات بترتيب المتغيرات المرقمة
+    for index, token in HELPER_BOT_TOKENS.items():
+        asyncio.create_task(start_helper_bot(index, token))
 
     while True:
         await asyncio.sleep(3600)
