@@ -1,2 +1,3 @@
-discord.py>=2.3.0
-PyNaCl
+discord.py>=2.5.0
+pynacl
+davey
