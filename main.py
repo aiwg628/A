@@ -7,12 +7,12 @@ from discord.ui import Button, View, Modal, TextInput
 # ----------------- قراءة التوكنات والإعدادات من Railway -----------------
 MAIN_BOT_TOKEN = os.getenv("MAIN_BOT_TOKEN")
 
-# قراءة التوكنات بشكل منظم مع الحفاظ على الترقيم من 1 إلى 10
-HELPER_BOT_TOKENS = {}
+# قراءة التوكنات مرتبة مفهرسة من 1 إلى 10
+HELPER_BOT_TOKENS = []
 for i in range(1, 11):
     token = os.getenv(f"HELPER_TOKEN_{i}")
     if token:
-        HELPER_BOT_TOKENS[i] = token
+        HELPER_BOT_TOKENS.append((i, token))
 
 JOIN_TO_CREATE_ID = int(os.getenv("JOIN_TO_CREATE_ID", "1546614862032150540"))
 WAITING_ROOM_ID = int(os.getenv("WAITING_ROOM_ID", "1543680903853641821"))
@@ -31,8 +31,8 @@ helper_intents.guilds = True
 main_bot = commands.Bot(command_prefix="!", intents=main_intents)
 
 active_rooms = {}
-# قاموس لتخزين البوتات المساعدة المتاحة حسب رقمها المرتب {index: helper_client}
-available_helpers = {}
+# قائمة البوتات المساعدة المتاحة مرتبة بالتسلسل الصارم
+available_helpers = []
 room_counter = 0
 
 # ----------------- نافذة تغيير اسم الروم -----------------
@@ -99,7 +99,7 @@ class VoiceInterfaceView(View):
         await delete_temp_room(self.room_id)
 
 # ----------------- وظيفة حذف الروم والتوجيه الذكي للبوت المساعد -----------------
-async def delete_temp_room(room_id):
+async def delete_temp_room(room_id, delete_channel_discord=True):
     if room_id not in active_rooms:
         return
     
@@ -108,41 +108,48 @@ async def delete_temp_room(room_id):
     if data.get("timeout_task"):
         data["timeout_task"].cancel()
 
-    room_channel = main_bot.get_channel(room_id)
-    if not room_channel:
-        try:
-            room_channel = await main_bot.fetch_channel(room_id)
-        except Exception:
-            pass
-
     if data.get("interface_msg"):
         try:
             await data["interface_msg"].delete()
         except Exception:
             pass
 
-    helper_info = data.get("bot_info") # ينقل (index, client)
+    helper_item = data.get("bot_item") # يحتوي على (index, client)
     
-    if room_channel:
-        try:
-            await room_channel.delete()
-        except Exception as e:
-            print(f"❌ تعذر حذف القناة الصوتية: {e}")
+    # حذف الروم الصوتية إن لم تكن ممسوحة بالفعل من الأدمن
+    if delete_channel_discord:
+        room_channel = main_bot.get_channel(room_id)
+        if not room_channel:
+            try:
+                room_channel = await main_bot.fetch_channel(room_id)
+            except Exception:
+                pass
+        if room_channel:
+            try:
+                await room_channel.delete()
+            except Exception as e:
+                print(f"❌ تعذر حذف القناة الصوتية: {e}")
 
-    if helper_info:
-        helper_idx, helper_bot = helper_info
+    # إعادة توجيه البوت المساعد
+    if helper_item:
+        helper_idx, helper_bot = helper_item
         target_channel_id = None
         
+        # تحويل البوت لروم ثانية محتاجة إن وجدت
         for target_id, r_data in active_rooms.items():
-            if r_data.get("bot_info") is None:
+            if r_data.get("bot_item") is None:
                 target_channel_id = target_id
-                r_data["bot_info"] = (helper_idx, helper_bot)
-                print(f"🔄 نقل البوت المساعد رقم [{helper_idx}] لخدمة الروم المؤقت (ID: {target_id})")
+                r_data["bot_item"] = helper_item
+                print(f"🔄 نقل البوت المساعد رقم [{helper_idx}] لخدمة الروم (ID: {target_id})")
                 break
         
+        # إذا لا توجد رومات محتاجة، إرجاعه لروم الانتظار
         if not target_channel_id:
             target_channel_id = WAITING_ROOM_ID
-            available_helpers[helper_idx] = helper_bot
+            # إرجاع البوت للقائمة وإعادة فرزها بالترتيب التنازلي الصارم
+            if helper_item not in available_helpers:
+                available_helpers.append(helper_item)
+                available_helpers.sort(key=lambda x: x[0])
             print(f"🏠 إرجاع البوت المساعد رقم [{helper_idx}] لروم الانتظار.")
 
         try:
@@ -159,10 +166,18 @@ async def delete_temp_room(room_id):
 async def on_ready():
     print(f"🚀 تم تشغيل البوت الرئيسي بنجاح: {main_bot.user.name}")
 
+# كاشف حذف الرومات يدوياً من قِبل الأدمن
+@main_bot.event
+async def on_guild_channel_delete(channel):
+    if channel.id in active_rooms:
+        print(f"⚠️ تم حذف الروم [{channel.name}] يدوياً بواسطة الأدمن. جاري إعادة البوت المساعد...")
+        await delete_temp_room(channel.id, delete_channel_discord=False)
+
 @main_bot.event
 async def on_voice_state_update(member, before, after):
     global room_counter
 
+    # 1. إنشاء روم صوتي جديد
     if after.channel and after.channel.id == JOIN_TO_CREATE_ID:
         guild = member.guild
         category = guild.get_channel(CATEGORY_ID)
@@ -192,13 +207,12 @@ async def on_voice_state_update(member, before, after):
             print(f"❌ خطأ أثناء إنشاء الروم أو نقل العضو: {e}")
             return
 
-        assigned_helper_info = None
+        assigned_helper_item = None
         
-        # اختيار أقل رقم بوت مساعد متوفر لضمان الترتيب التنازلي المنظم (1 ثم 2 ثم 3...)
+        # سحب أحدث بوت مساعد متوفر حسب التسلسل الدقيق (1، ثم 2، ثم 3...)
         if available_helpers:
-            first_available_idx = min(available_helpers.keys())
-            assigned_helper = available_helpers.pop(first_available_idx)
-            assigned_helper_info = (first_available_idx, assigned_helper)
+            assigned_helper_item = available_helpers.pop(0)
+            h_idx, assigned_helper = assigned_helper_item
 
             try:
                 for vc in assigned_helper.voice_clients:
@@ -207,7 +221,7 @@ async def on_voice_state_update(member, before, after):
                 helper_target_channel = assigned_helper.get_channel(new_channel.id) or await assigned_helper.fetch_channel(new_channel.id)
                 if helper_target_channel:
                     await helper_target_channel.connect(reconnect=True, self_deaf=True, self_mute=True)
-                    print(f"🤖 دخل البوت المساعد رقم [{first_available_idx}] لروم الشخص بالزيف الكلي.")
+                    print(f"🤖 دخل البوت المساعد رقم [{h_idx}] لروم الشخص بالزيف الكلي.")
             except Exception as e:
                 print(f"❌ تعذر نقل البوت المساعد للروم الجديد: {e}")
 
@@ -224,11 +238,12 @@ async def on_voice_state_update(member, before, after):
 
         active_rooms[new_channel.id] = {
             "owner_id": member.id,
-            "bot_info": assigned_helper_info,
+            "bot_item": assigned_helper_item,
             "interface_msg": msg,
             "timeout_task": None
         }
 
+    # 2. خروج الأعضاء وتفعيل المؤقت
     if before.channel and before.channel.id in active_rooms:
         room_id = before.channel.id
         channel = before.channel
@@ -245,6 +260,7 @@ async def on_voice_state_update(member, before, after):
             task = asyncio.create_task(delayed_deletion())
             active_rooms[room_id]["timeout_task"] = task
 
+    # 3. إلغاء الحذف عند عودة أي عضو
     if after.channel and after.channel.id in active_rooms:
         room_id = after.channel.id
         room_data = active_rooms[room_id]
@@ -254,30 +270,28 @@ async def on_voice_state_update(member, before, after):
             room_data["timeout_task"].cancel()
             room_data["timeout_task"] = None
 
-# ----------------- التشغيل للبوتات المساعدة مع الربط برقم التوكن -----------------
-async def connect_helper_to_waiting_room(helper, index):
-    await asyncio.sleep(3)
-    try:
-        channel = helper.get_channel(WAITING_ROOM_ID) or await helper.fetch_channel(WAITING_ROOM_ID)
-        if channel and isinstance(channel, discord.VoiceChannel):
-            if not helper.voice_clients:
-                await channel.connect(reconnect=True, self_deaf=True, self_mute=True)
-                available_helpers[index] = helper
-                print(f"🤖 البوت المساعد رقم [{index}] دخل روم الانتظار بنجاح (مع الزيف والترتيب).")
-    except Exception as e:
-        print(f"⚠️ فشل البوت المساعد رقم [{index}] في دخول روم الانتظار: {e}")
-
-async def start_helper_bot(index, token):
+# ----------------- تشغيل البوتات بترتيب تسلسلي صارم -----------------
+async def start_single_helper(index, token):
     helper = discord.Client(intents=helper_intents)
+    ready_event = asyncio.Event()
 
     @helper.event
     async def on_ready():
-        asyncio.create_task(connect_helper_to_waiting_room(helper, index))
+        ready_event.set()
 
+    asyncio.create_task(helper.start(token))
+    await ready_event.wait()
+    
+    # بعد تسجيل الدخول، توجيهه فوراً إلى روم الانتظار بالزيف
     try:
-        await helper.start(token)
+        channel = helper.get_channel(WAITING_ROOM_ID) or await helper.fetch_channel(WAITING_ROOM_ID)
+        if channel and isinstance(channel, discord.VoiceChannel):
+            await channel.connect(reconnect=True, self_deaf=True, self_mute=True)
+            available_helpers.append((index, helper))
+            available_helpers.sort(key=lambda x: x[0])
+            print(f"✅ البوت المساعد رقم [{index}] دخل روم الانتظار بالترتيب الصحيح.")
     except Exception as e:
-        print(f"❌ فشل تشغيل البوت المساعد رقم [{index}]: {e}")
+        print(f"⚠️ تعذر إدخال البوت [{index}] لروم الانتظار: {e}")
 
 async def main():
     if MAIN_BOT_TOKEN:
@@ -286,9 +300,13 @@ async def main():
         print("❌ لم يتم العثور على MAIN_BOT_TOKEN!")
         return
 
-    # تشغيل البوتات بترتيب المتغيرات المرقمة
-    for index, token in HELPER_BOT_TOKENS.items():
-        asyncio.create_task(start_helper_bot(index, token))
+    # تشغيل البوتات المساعدة تسلسلياً بالترتيب من 1 لـ 10 واحد تلو الآخر
+    print("⏳ جاري بدء تشغيل البوتات المساعدة بالترتيب المتسلسل...")
+    for index, token in HELPER_BOT_TOKENS:
+        await start_single_helper(index, token)
+        await asyncio.sleep(1.5)  # فاصل زمني لتجنب حظر المعدل Rate Limit
+
+    print("🚀 اكتمل تشغيل وربط جميع البوتات المساعدة بنجاح!")
 
     while True:
         await asyncio.sleep(3600)
