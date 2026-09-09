@@ -1,14 +1,14 @@
 import os
 import asyncio
+import re
 import discord
 from discord.ext import commands
 from discord.ui import Button, View, Modal, TextInput
+import yt_dlp
 
 # ----------------- قراءة التوكنات والإعدادات من Railway -----------------
-# التوكن الرئيسي للبوت (يدعم التسميتين لضمان التوافق)
 MAIN_BOT_TOKEN = os.getenv("MAIN_BOT_TOKEN") or os.getenv("DISCORD_TOKEN")
 
-# قراءة توكنات البوتات المساعدة (من 1 إلى 10)
 HELPER_BOT_TOKENS = []
 for i in range(1, 11):
     token = os.getenv(f"HELPER_TOKEN_{i}")
@@ -39,6 +39,23 @@ main_bot = commands.Bot(command_prefix="!", intents=main_intents)
 active_rooms = {}
 available_helpers = []
 room_counter = 0
+
+# ----------------- وظيفة تحميل الفيديو -----------------
+URL_REGEX = r'(https?://(?:www\.)?(?:tiktok\.com|instagram\.com|instagr\.am|youtube\.com/shorts)/[^\s]+)'
+
+def download_media(url):
+    """تحميل الفيديو بصيغة mp4 بحجم مناسب لمدخلات ديسكورد"""
+    ydl_opts = {
+        'format': 'mp4/bestvideo+bestaudio/best',
+        'outtmpl': 'downloaded_video.%(ext)s',
+        'max_filesize': 25 * 1024 * 1024,  # حد أقصى 25 ميجابايت للتوافق مع حدود الديسكورد
+        'quiet': True,
+        'no_warnings': True,
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=True)
+        filename = ydl.prepare_filename(info)
+        return filename
 
 # ----------------- نافذة تغيير اسم الروم الصوتية -----------------
 class RenameModal(Modal, title="تغيير اسم الروم"):
@@ -110,11 +127,9 @@ async def delete_temp_room(room_id, delete_channel_discord=True):
     
     data = active_rooms.pop(room_id)
     
-    # إلغاء مؤقت الانتظار إن وجد
     if data.get("timeout_task"):
         data["timeout_task"].cancel()
 
-    # حذف لوحة التحكم
     if data.get("interface_msg"):
         try:
             await data["interface_msg"].delete()
@@ -123,7 +138,6 @@ async def delete_temp_room(room_id, delete_channel_discord=True):
 
     helper_item = data.get("bot_item")
     
-    # حذف الروم الصوتية من الديسكورد
     if delete_channel_discord:
         room_channel = main_bot.get_channel(room_id)
         if not room_channel:
@@ -138,12 +152,10 @@ async def delete_temp_room(room_id, delete_channel_discord=True):
             except Exception as e:
                 print(f"❌ تعذر حذف القناة الصوتية: {e}")
 
-    # إعادة توجيه البوت المساعد
     if helper_item:
         helper_idx, helper_bot = helper_item
         target_channel_id = None
         
-        # تحويل البوت لروم ثانية محتاجة إن وجدت
         for target_id, r_data in active_rooms.items():
             if r_data.get("bot_item") is None:
                 target_channel_id = target_id
@@ -151,7 +163,6 @@ async def delete_temp_room(room_id, delete_channel_discord=True):
                 print(f"🔄 نقل البوت المساعد رقم [{helper_idx}] لخدمة الروم (ID: {target_id})")
                 break
         
-        # إذا لا توجد رومات محتاجة، إرجاعه لروم الانتظار
         if not target_channel_id:
             target_channel_id = WAITING_ROOM_ID
             if helper_item not in available_helpers:
@@ -173,7 +184,35 @@ async def delete_temp_room(room_id, delete_channel_discord=True):
 async def on_ready():
     print(f"🚀 تم تشغيل البوت الرئيسي بنجاح: {main_bot.user.name}")
 
-# أمر Spotify المحدث
+# فحص الرسائل وتنزيل مقاطع تيك توك وإنستغرام تلقائياً
+@main_bot.event
+async def on_message(message):
+    if message.author.bot:
+        return
+
+    # التفتيش عن الروابط
+    urls = re.findall(URL_REGEX, message.content)
+    if urls:
+        url = urls[0]
+        status_msg = await message.channel.send("📥 **جاري تحميل الفيديو...**")
+        try:
+            # تشغيل العملية في خلفية منفصلة لمنع تعليق البوت
+            loop = asyncio.get_event_loop()
+            filename = await loop.run_in_executor(None, download_media, url)
+            
+            if os.path.exists(filename):
+                await message.channel.send(
+                    content=f"🎬 **تم التحميل بواسطة:** {message.author.mention}",
+                    file=discord.File(filename)
+                )
+                await status_msg.delete()
+                os.remove(filename)  # تنظيف الملف بعد الإرسال
+        except Exception as e:
+            await status_msg.edit(content=f"❌ **تعذر تحميل الفيديو:** قد يكون الحجم كبيراً جداً أو الحساب خاص.")
+
+    await main_bot.process_commands(message)
+
+# أمر Spotify
 @main_bot.command(name="spotify", aliases=["sp", "SP"])
 async def spotify_status(ctx, member: discord.Member = None):
     if ctx.channel.id != ALLOWED_SPOTIFY_CHANNEL_ID:
@@ -195,30 +234,25 @@ async def spotify_status(ctx, member: discord.Member = None):
             title=spotify_activity.title,
             url=spotify_activity.track_url,
             description=f"👤 **الفنان:** {artists_names}\n💿 **الألبوم:** {spotify_activity.album}",
-            color=0xBFBFBF  # لون الإمبد الرمادي الثابت
+            color=0xBFBFBF
         )
         embed.set_author(name=f"استماع حالي لـ {target.display_name}", icon_url=target.display_avatar.url)
-        
-        # وضع غلاف الألبوم كـ Thumbnail مصغرة بالجانب الأيمن
         embed.set_thumbnail(url=spotify_activity.album_cover_url)
 
         await ctx.send(embed=embed)
     else:
         await ctx.send(f"❌ {target.mention} لا يستمع إلى Spotify حالياً.")
 
-# كاشف حذف الرومات يدوياً
 @main_bot.event
 async def on_guild_channel_delete(channel):
     if channel.id in active_rooms:
         print(f"⚠️ تم حذف الروم [{channel.name}] يدوياً بواسطة الأدمن. جاري إعادة البوت المساعد...")
         await delete_temp_room(channel.id, delete_channel_discord=False)
 
-# مراقبة الرومات الصوتية وتطبيق نظام الساعات المؤقتة
 @main_bot.event
 async def on_voice_state_update(member, before, after):
     global room_counter
 
-    # 1. إنشاء روم صوتي جديد
     if after.channel and after.channel.id == JOIN_TO_CREATE_ID:
         guild = member.guild
         category = guild.get_channel(CATEGORY_ID)
@@ -283,18 +317,15 @@ async def on_voice_state_update(member, before, after):
             "timeout_task": None
         }
 
-    # 2. فحص حالة الرومات الفعالة عند أي حركة صوتية (للتحقق من الشغور/المؤقت)
     for r_id in list(active_rooms.keys()):
         v_channel = main_bot.get_channel(r_id)
         if not v_channel:
             continue
 
-        # حساب عدد البشر المتواجدين في الروم
         human_count = len([m for m in v_channel.members if not m.bot])
         r_data = active_rooms[r_id]
 
         if human_count == 0:
-            # إن كان الروم فارغاً ولا يوجد مؤقت شغال حالياً، ننشئ مؤقتاً جديداً
             if r_data.get("timeout_task") is None:
                 async def delayed_deletion(target_room_id):
                     try:
@@ -303,18 +334,17 @@ async def on_voice_state_update(member, before, after):
                         print(f"⏰ انتهت مهلة الساعة للروم [{target_room_id}]، جاري الحذف...")
                         await delete_temp_room(target_room_id)
                     except asyncio.CancelledError:
-                        print(f"🛑 تم إيقاف مؤقت حذف الروم [{target_room_id}] لدخول عضو أجنبي/شخص حقيقي.")
+                        print(f"🛑 تم إيقاف مؤقت حذف الروم [{target_room_id}] لدخول شخص حقيقي.")
 
                 task = asyncio.create_task(delayed_deletion(r_id))
                 r_data["timeout_task"] = task
 
         else:
-            # إذا دخل بشر إلى الروم وكان المؤقت يعطي تنازلي، قم بإلغائه فوراً
             if r_data.get("timeout_task") is not None:
                 r_data["timeout_task"].cancel()
                 r_data["timeout_task"] = None
 
-# ----------------- تشغيل البوتات بترتيب تسلسلي صارم -----------------
+# ----------------- تشغيل البوتات بترتيب تسلسلي -----------------
 async def start_single_helper(index, token):
     helper = discord.Client(intents=helper_intents)
     ready_event = asyncio.Event()
