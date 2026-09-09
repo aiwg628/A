@@ -173,7 +173,7 @@ async def delete_temp_room(room_id, delete_channel_discord=True):
 async def on_ready():
     print(f"🚀 تم تشغيل البوت الرئيسي بنجاح: {main_bot.user.name}")
 
-# أمر Spotify
+# أمر Spotify المحدث
 @main_bot.command(name="spotify", aliases=["sp", "SP"])
 async def spotify_status(ctx, member: discord.Member = None):
     if ctx.channel.id != ALLOWED_SPOTIFY_CHANNEL_ID:
@@ -195,10 +195,12 @@ async def spotify_status(ctx, member: discord.Member = None):
             title=spotify_activity.title,
             url=spotify_activity.track_url,
             description=f"👤 **الفنان:** {artists_names}\n💿 **الألبوم:** {spotify_activity.album}",
-            color=0x1DB954
+            color=0xBFBFBF  # لون الإمبد الرمادي الثابت
         )
         embed.set_author(name=f"استماع حالي لـ {target.display_name}", icon_url=target.display_avatar.url)
-        embed.set_image(url=spotify_activity.album_cover_url)
+        
+        # وضع غلاف الألبوم كـ Thumbnail مصغرة بالجانب الأيمن
+        embed.set_thumbnail(url=spotify_activity.album_cover_url)
 
         await ctx.send(embed=embed)
     else:
