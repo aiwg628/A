@@ -21,13 +21,12 @@ WAITING_ROOM_ID = int(os.getenv("WAITING_ROOM_ID", "1543680903853641821"))
 CATEGORY_ID = int(os.getenv("CATEGORY_ID", "1546174974665039982"))
 ALLOWED_SPOTIFY_CHANNEL_ID = 1547347259770019880
 
-# قائمة الإدارة والعقوبات
-MOD_LOG_CHANNEL_ID = 1543682652417167460  # روم إرسال الإمبد
-MOD_ROLE_ID = 1543682652417167460        # الرتبة المراد منشناتها
+# ----------------- إعدادات روم اللوج والرتبة والمسبات -----------------
+MOD_LOG_CHANNEL_ID = 1545547297096601630  # الروم المخصص لإرسال الإمبد
+MOD_ROLE_ID = 1543682652417167460        # الرتبة المراد منشنتها (تصرف)
 
-EMPTY_TIMEOUT = 3600  # مهلة خروج الجميع وتفريغ الروم (ساعة)
+EMPTY_TIMEOUT = 3600  # مهلة تفريغ الروم (ساعة)
 
-# ----------------- قائمة الكلمات الممنوعة (الفلتر) -----------------
 BAD_WORDS = [
     "3alaq", "3lq", "3rs", "anus", "b0z", "b3b3s", "bzz", "d3ara", "discord.gg", "dyoth", "dywth",
     "fajer", "fajra", "gl5", "glk", "ibnmtanaka", "k0s", "k5m", "khneth", "khol", "khwl", "kos",
@@ -209,7 +208,7 @@ async def delete_temp_room(room_id, delete_channel_discord=True):
 async def on_ready():
     print(f"🚀 تم تشغيل البوت الرئيسي بنجاح: {main_bot.user.name}")
 
-# فحص الرسائل: فلتر المسبات + تنزيل الميديا
+# فحص الرسائل: الفلترة وإعطاء التايم أوت وإرسال الإمبد
 @main_bot.event
 async def on_message(message):
     if message.author.bot or not message.guild:
@@ -217,18 +216,16 @@ async def on_message(message):
 
     content_lower = message.content.lower()
 
-    # 1. نظام الحماية وفلترة المسبات
+    # 1. نظام الحماية والفلترة
     matched_word = None
     for bad_word in BAD_WORDS:
-        # فحص وجود الكلمة بدقة
-        pattern = re.compile(r'(?:^|\s|[^a-zA-Z0-9أ-ي])' + re.escape(bad_word.lower()) + r'(?:$|\s|[^a-zA-Z0-9أ-ي])')
-        if pattern.search(content_lower) or bad_word.lower() in content_lower:
+        if bad_word.lower() in content_lower:
             matched_word = bad_word
             break
 
     if matched_word:
         try:
-            # حذف الرسالة المخالفة فوراً
+            # حذف الرسالة المخالفة
             await message.delete()
         except Exception:
             pass
@@ -240,25 +237,34 @@ async def on_message(message):
         except Exception as e:
             print(f"❌ تعذر إعطاء تايم أوت للعضو: {e}")
 
-        # إرسال التنبيه في الروم المخصص مع المنشن
+        # جلب روم اللوج المخصص (1545547297096601630)
         log_channel = message.guild.get_channel(MOD_LOG_CHANNEL_ID)
+        if not log_channel:
+            try:
+                log_channel = await message.guild.fetch_channel(MOD_LOG_CHANNEL_ID)
+            except Exception:
+                log_channel = None
+
         if log_channel:
+            # إمبد بلون إمبد الأغاني الرمادي 0xBFBFBF
             embed = discord.Embed(
-                title="⚠️ تصرف",
-                color=0xFF0000,
+                title="تصرف",
+                color=0xBFBFBF,
                 timestamp=datetime.datetime.now(datetime.timezone.utc)
             )
+            embed.set_author(name=f"مخالفة بواسطة: {message.author.display_name}", icon_url=message.author.display_avatar.url)
             embed.add_field(name="العضو المخالف:", value=f"{message.author.mention} (`{message.author.id}`)", inline=False)
             embed.add_field(name="الكلمة المحظورة:", value=f"`{matched_word}`", inline=False)
-            embed.add_field(name="القناة:", value=message.channel.mention, inline=False)
-            embed.add_field(name="الجراء المتخذ:", value="تم إعطاؤه تايم أوت لمدة ساعة واحدة (1 Hour)", inline=False)
+            embed.add_field(name="الروم:", value=message.channel.mention, inline=False)
+            embed.add_field(name="الإجراء:", value="تم تطبيق تايم أوت لمدة ساعة تلقائياً.", inline=False)
             embed.set_thumbnail(url=message.author.display_avatar.url)
 
+            # إرسال المنشن للرتبة 1543682652417167460 متبوعاً بالإمبد
             await log_channel.send(content=f"<@&{MOD_ROLE_ID}> تصرف", embed=embed)
 
-        return  # إيقاف معالجة باقي الرسالة
+        return
 
-    # 2. فحص الروابط وتنزيل الميديا (تيك توك، إنستغرام، شورتس)
+    # 2. فحص الروابط وتنزيل الميديا
     urls = re.findall(URL_REGEX, message.content)
     if urls:
         url = urls[0]
