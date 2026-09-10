@@ -23,7 +23,7 @@ ALLOWED_SPOTIFY_CHANNEL_ID = 1547347259770019880
 
 # ----------------- إعدادات روم اللوج والرتبة والمسبات -----------------
 MOD_LOG_CHANNEL_ID = 1545547297096601630  # الروم المخصص لإرسال الإمبد
-MOD_ROLE_ID = 1543682652417167460        # الرتبة المراد منشنتها (تصرف)
+MOD_ROLE_ID = 1543682652417167460        # الرتبة المراد منشنتها
 
 EMPTY_TIMEOUT = 3600  # مهلة تفريغ الروم (ساعة)
 
@@ -46,6 +46,14 @@ BAD_WORDS = [
     "نيكه", "هايجة", "يبن الشرموطه", "يبن القحبه", "يبنالشرموطه", "يبنالقحبه", "يتشعبط", "يتناك",
     "يجلخ", "يخنيث", "يلعن ابوك", "يلعن امك", "يلعن دينك", "يمص", "ينك", "ينيك"
 ]
+
+# ----------------- تجهيز التعبيرات النمطية الدقيقة لجميع الكلمات -----------------
+COMPILED_PATTERNS = []
+for word in BAD_WORDS:
+    w_escaped = re.escape(word.lower())
+    # نمط شامل يلزم وجود حدود للكلمة سواء بالعربية أو بالإنجليزية أو الرموز
+    pattern_str = rf"(?:(?<=[\s\^\W_])|(?<=^)){w_escaped}(?=(?:[\s\$\W_]|$))"
+    COMPILED_PATTERNS.append((word, re.compile(pattern_str, re.UNICODE)))
 
 # ----------------- إعداد الـ Intents -----------------
 main_intents = discord.Intents.default()
@@ -208,7 +216,7 @@ async def delete_temp_room(room_id, delete_channel_discord=True):
 async def on_ready():
     print(f"🚀 تم تشغيل البوت الرئيسي بنجاح: {main_bot.user.name}")
 
-# فحص الرسائل: الفلترة وإعطاء التايم أوت وإرسال الإمبد
+# فحص الرسائل: الفلترة بحدود الكلمة الدقيقة لكل الكلمات
 @main_bot.event
 async def on_message(message):
     if message.author.bot or not message.guild:
@@ -216,11 +224,11 @@ async def on_message(message):
 
     content_lower = message.content.lower()
 
-    # 1. نظام الحماية والفلترة
+    # 1. نظام الحماية بالبحث عن كل الكلمات بحدود كلمة كاملة ومستقلة
     matched_word = None
-    for bad_word in BAD_WORDS:
-        if bad_word.lower() in content_lower:
-            matched_word = bad_word
+    for raw_word, compiled_pat in COMPILED_PATTERNS:
+        if compiled_pat.search(content_lower):
+            matched_word = raw_word
             break
 
     if matched_word:
@@ -246,7 +254,6 @@ async def on_message(message):
                 log_channel = None
 
         if log_channel:
-            # إمبد بلون إمبد الأغاني الرمادي 0xBFBFBF
             embed = discord.Embed(
                 title="تصرف",
                 color=0xBFBFBF,
