@@ -1,6 +1,7 @@
 import os
 import asyncio
 import re
+import datetime
 import discord
 from discord.ext import commands
 from discord.ui import Button, View, Modal, TextInput
@@ -20,7 +21,32 @@ WAITING_ROOM_ID = int(os.getenv("WAITING_ROOM_ID", "1543680903853641821"))
 CATEGORY_ID = int(os.getenv("CATEGORY_ID", "1546174974665039982"))
 ALLOWED_SPOTIFY_CHANNEL_ID = 1547347259770019880
 
+# قائمة الإدارة والعقوبات
+MOD_LOG_CHANNEL_ID = 1543682652417167460  # روم إرسال الإمبد
+MOD_ROLE_ID = 1543682652417167460        # الرتبة المراد منشناتها
+
 EMPTY_TIMEOUT = 3600  # مهلة خروج الجميع وتفريغ الروم (ساعة)
+
+# ----------------- قائمة الكلمات الممنوعة (الفلتر) -----------------
+BAD_WORDS = [
+    "3alaq", "3lq", "3rs", "anus", "b0z", "b3b3s", "bzz", "d3ara", "discord.gg", "dyoth", "dywth",
+    "fajer", "fajra", "gl5", "glk", "ibnmtanaka", "k0s", "k5m", "khneth", "khol", "khwl", "kos",
+    "k*s", "ks", "ksmk", "kss", "l7ass", "l7s", "laboh", "labwa", "m3rs", "ms", "mss", "n!k",
+    "n€k", "n1k", "n33k", "nik", "porn", "q7ba", "qahba", "qwad", "qwada", "sharmota", "shmota",
+    "si7aq", "t!z", "t1z", "tm7n", "tyez", "tyez0", "tyezs", "ybnlq7ba", "ybnshrmota", "ykhneth",
+    "z0b", "z1b", "zany", "zanya", "zb", "z*b", "zbb", "متناكة", "ابن متناكه", "ابنمتناكة", "ابنمتناكه",
+    "احط زبي", "ارkب عليه", "اركب عليه", "اركبه عليه", "ازبار", "اضربك", "اطياز", "اظبار", "اغتصب",
+    "افشخك", "اكساس", "انيك", "اير", "بتتناك", "بز", "بزاز", "بزه", "بعبص", "بعبصه", "بنيك", "بورن",
+    "بينيك", "تتمحن", "تشعبط", "تمحن", "تمص", "جلخ", "حايضة", "حايضه", "حط زبي", "خنيث", "خول",
+    "دعاره", "ديوث", "زاني", "زانية", "زب", "زبوب", "زبون", "زبي", "زنوه", "زواني", "سحاق", "شراميط",
+    "شرموطة", "شرموطه", "شقلي بقلي", "طرابيشي", "طياز", "طيز", "طيزه", "طيزها", "طيزي", "طيوز", "ظوبر",
+    "ظوبره", "عاهر", "عاهره", "عرص", "علق", "فاجر", "فاجرة", "فاجره", "قحاب", "قحبة", "قحبه", "قواد",
+    "قواده", "كاشحة", "كس", "كس م", "كسم", "كسمك", "كسمه", "كسمها", "كسمهم", "كسميات", "كسه", "كسها",
+    "كسين", "كسينك", "كسينمك", "لايجة", "لبوة", "لبوه", "متناك", "متناكة", "متناكه", "مساحقه", "مص",
+    "مصه", "مطايز", "معرص", "مفتوحة", "مناكح", "مناكيح", "منكوحة", "منيوك", "نياكه", "نيك", "نيكة",
+    "نيكه", "هايجة", "يبن الشرموطه", "يبن القحبه", "يبنالشرموطه", "يبنالقحبه", "يتشعبط", "يتناك",
+    "يجلخ", "يخنيث", "يلعن ابوك", "يلعن امك", "يلعن دينك", "يمص", "ينك", "ينيك"
+]
 
 # ----------------- إعداد الـ Intents -----------------
 main_intents = discord.Intents.default()
@@ -44,11 +70,10 @@ room_counter = 0
 URL_REGEX = r'(https?://(?:www\.)?(?:tiktok\.com|instagram\.com|instagr\.am|youtube\.com/shorts)/[^\s]+)'
 
 def download_media(url):
-    """تحميل الفيديو بصيغة mp4 بحجم مناسب لمدخلات ديسكورد"""
     ydl_opts = {
         'format': 'mp4/bestvideo+bestaudio/best',
         'outtmpl': 'downloaded_video.%(ext)s',
-        'max_filesize': 25 * 1024 * 1024,  # حد أقصى 25 ميجابايت للتوافق مع حدود الديسكورد
+        'max_filesize': 25 * 1024 * 1024,
         'quiet': True,
         'no_warnings': True,
     }
@@ -184,19 +209,61 @@ async def delete_temp_room(room_id, delete_channel_discord=True):
 async def on_ready():
     print(f"🚀 تم تشغيل البوت الرئيسي بنجاح: {main_bot.user.name}")
 
-# فحص الرسائل وتنزيل مقاطع تيك توك وإنستغرام تلقائياً
+# فحص الرسائل: فلتر المسبات + تنزيل الميديا
 @main_bot.event
 async def on_message(message):
-    if message.author.bot:
+    if message.author.bot or not message.guild:
         return
 
-    # التفتيش عن الروابط
+    content_lower = message.content.lower()
+
+    # 1. نظام الحماية وفلترة المسبات
+    matched_word = None
+    for bad_word in BAD_WORDS:
+        # فحص وجود الكلمة بدقة
+        pattern = re.compile(r'(?:^|\s|[^a-zA-Z0-9أ-ي])' + re.escape(bad_word.lower()) + r'(?:$|\s|[^a-zA-Z0-9أ-ي])')
+        if pattern.search(content_lower) or bad_word.lower() in content_lower:
+            matched_word = bad_word
+            break
+
+    if matched_word:
+        try:
+            # حذف الرسالة المخالفة فوراً
+            await message.delete()
+        except Exception:
+            pass
+
+        try:
+            # إعطاء تايم أوت لمدة ساعة (60 دقيقة)
+            duration = datetime.timedelta(hours=1)
+            await message.author.timeout(duration, reason=f"استخدام كلمة محظورة: {matched_word}")
+        except Exception as e:
+            print(f"❌ تعذر إعطاء تايم أوت للعضو: {e}")
+
+        # إرسال التنبيه في الروم المخصص مع المنشن
+        log_channel = message.guild.get_channel(MOD_LOG_CHANNEL_ID)
+        if log_channel:
+            embed = discord.Embed(
+                title="⚠️ تصرف",
+                color=0xFF0000,
+                timestamp=datetime.datetime.now(datetime.timezone.utc)
+            )
+            embed.add_field(name="العضو المخالف:", value=f"{message.author.mention} (`{message.author.id}`)", inline=False)
+            embed.add_field(name="الكلمة المحظورة:", value=f"`{matched_word}`", inline=False)
+            embed.add_field(name="القناة:", value=message.channel.mention, inline=False)
+            embed.add_field(name="الجراء المتخذ:", value="تم إعطاؤه تايم أوت لمدة ساعة واحدة (1 Hour)", inline=False)
+            embed.set_thumbnail(url=message.author.display_avatar.url)
+
+            await log_channel.send(content=f"<@&{MOD_ROLE_ID}> تصرف", embed=embed)
+
+        return  # إيقاف معالجة باقي الرسالة
+
+    # 2. فحص الروابط وتنزيل الميديا (تيك توك، إنستغرام، شورتس)
     urls = re.findall(URL_REGEX, message.content)
     if urls:
         url = urls[0]
         status_msg = await message.channel.send("📥 **جاري تحميل الفيديو...**")
         try:
-            # تشغيل العملية في خلفية منفصلة لمنع تعليق البوت
             loop = asyncio.get_event_loop()
             filename = await loop.run_in_executor(None, download_media, url)
             
@@ -206,7 +273,7 @@ async def on_message(message):
                     file=discord.File(filename)
                 )
                 await status_msg.delete()
-                os.remove(filename)  # تنظيف الملف بعد الإرسال
+                os.remove(filename)
         except Exception as e:
             await status_msg.edit(content=f"❌ **تعذر تحميل الفيديو:** قد يكون الحجم كبيراً جداً أو الحساب خاص.")
 
